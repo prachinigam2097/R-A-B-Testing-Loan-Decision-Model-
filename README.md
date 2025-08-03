@@ -1,4 +1,4 @@
-# A/B Testing Loan Decision Model – Advanced Data Analytics Project
+# A/B Testing Loan Decision Model
 
 ## Problem Statement
 A consumer lending company faced **high error rates in loan approvals** due to reliance on an outdated AI model. Loan officers were:
