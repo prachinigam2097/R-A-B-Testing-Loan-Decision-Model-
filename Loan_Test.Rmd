@@ -1,0 +1,287 @@
+---
+title: ""
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Step 1. Data Prep
+```{r}
+
+# Load necessary libraries
+library(tidyverse)  # For data manipulation and visualization
+library(ggplot2)    # For plotting
+library(dplyr)      # For data wrangling
+library(effsize)    # For effect size calculations
+library(pwr)        # For Power Level
+
+# Load the dataset
+df <- read.csv("ADA-Project.csv")
+
+df <- df %>%
+  filter(!is.na(day))
+
+# View first few rows
+head(df)
+
+# Convert Variant into a factor
+df$Variant <- as.factor(df$Variant)
+```
+
+# EDA
+```{r}
+# Check structure of the dataset
+str(df)
+
+# Summary of the dataset
+summary(df)
+
+# Check for missing values
+colSums(is.na(df))
+```
+
+```{r}
+# Add consistency check columns
+df <- df %>%
+  mutate(
+    # 1. Type I + Type II errors (initial) ≤ Completed Initial
+    check_type_errors_init = (typeI_init + typeII_init) <= complt_init,
+    
+    # 2. Type I + Type II errors (final) ≤ Completed Final
+    check_type_errors_fin = (typeI_fin + typeII_fin) <= complt_fin,
+    
+    # 3. Agreement Initial + Conflict Initial == Completed Initial
+    check_agree_conflict_init = (agree_init + conflict_init) == complt_init,
+    
+    # 4. Agreement Final + Conflict Final == Completed Final
+    check_agree_conflict_fin = (agree_fin + conflict_fin) == complt_fin,
+    
+    # 5. Completed Initial == Completed Final == Fully Completed
+    check_completion_consistency = (complt_init == complt_fin) & (complt_fin == fully_complt)
+  )
+
+# Print first few rows to verify new columns
+head(df)
+```
+```{r}
+# Create summary statistics for data consistency
+consistency_summary <- df %>%
+  summarise(
+    type_errors_init_valid = sum(check_type_errors_init, na.rm = TRUE),
+    type_errors_fin_valid = sum(check_type_errors_fin, na.rm = TRUE),
+    agree_conflict_init_valid = sum(check_agree_conflict_init, na.rm = TRUE),
+    agree_conflict_fin_valid = sum(check_agree_conflict_fin, na.rm = TRUE),
+    completion_consistency_valid = sum(check_completion_consistency, na.rm = TRUE),
+    total_rows = n()
+  ) %>%
+  select(-total_rows) %>%
+  pivot_longer(cols = everything(), names_to = "Check", values_to = "Valid_Count") %>%
+  mutate(
+    Total_Rows = nrow(df),
+    Pass_Percentage = (Valid_Count / Total_Rows) * 100
+  )
+consistency_summary
+
+```
+
+
+```{r}
+# Compute count, mean, median, and standard deviation for key numeric variables by Variant
+summary_stats <- df %>%
+  group_by(Variant) %>%
+  summarise(
+    count = n(),  # Count of observations per variant
+    
+    mean_typeI_fin = mean(typeI_fin, na.rm = TRUE),
+    median_typeI_fin = median(typeI_fin, na.rm = TRUE),
+    sd_typeI_fin = sd(typeI_fin, na.rm = TRUE),
+    
+    mean_typeII_fin = mean(typeII_fin, na.rm = TRUE),
+    median_typeII_fin = median(typeII_fin, na.rm = TRUE),
+    sd_typeII_fin = sd(typeII_fin, na.rm = TRUE),
+
+    mean_confidence_fin = mean(confidence_fin_total, na.rm = TRUE),
+    median_confidence_fin = median(confidence_fin_total, na.rm = TRUE),
+    sd_confidence_fin = sd(confidence_fin_total, na.rm = TRUE),
+
+    mean_complt_fin = mean(complt_fin, na.rm = TRUE),
+    median_complt_fin = median(complt_fin, na.rm = TRUE),
+    sd_complt_fin = sd(complt_fin, na.rm = TRUE)
+  )
+
+# Print the summary statistics
+print(summary_stats)
+```
+# Data Prep
+
+```{r}
+# Define financial assumptions
+average_interest_rate <- 0.2144  # 21.44% interest rate
+average_loan_amount <- 27500  # Average loan amount
+recovery_rate <- 0.709  # 70.9% recovery rate
+loss_per_bad_loan <- average_loan_amount * (1 - recovery_rate)  # $8,730 loss per bad loan
+profit_per_good_loan <- average_loan_amount * average_interest_rate  # $6,432 profit per good loan
+
+#Transforming the data to find the OEC
+df <- df %>%
+  mutate(
+    typeI_error_rate_init = typeI_init / ifelse(goodloans_num == 0, 1, goodloans_num),
+    typeI_error_rate_fin = typeI_fin / ifelse(goodloans_num == 0, 1, goodloans_num),
+    typeII_error_rate_init = typeII_init / ifelse(badloans_num == 0, 1, badloans_num),
+    typeII_error_rate_fin = typeII_fin / ifelse(badloans_num == 0, 1, badloans_num),
+    confidence_init_rate = confidence_init_total / complt_init, 
+    confidence_fin_rate = confidence_fin_total/ complt_fin,
+    revised_per_ai_rate = revised_per_ai / complt_fin,
+    revised_agst_ai_rate = revised_agst_ai / complt_fin,
+    typeI_cmplt_error_rate_init = typeI_init / ifelse(complt_init == 0, 1, complt_init), # Compute Type I error rate before AI (Type I errors divided by completed initial loans)
+    typeII_cmplt_error_rate_init = typeII_init / ifelse(complt_init == 0, 1, complt_init), # Compute Type II error rate before AI (Type II errors divided by completed initial loans)
+    ai_typeI_error_rate = ai_typeI / ifelse(goodloans_num == 0, 1, goodloans_num), # Compute AI's Type I error rates 
+    ai_typeII_error_rate = ai_typeII / ifelse(badloans_num == 0, 1, badloans_num) # Compute AI's Type II error rates
+    )
+
+
+df <- df %>%
+  mutate(
+    typeI_error_rate_diff = typeI_error_rate_fin-typeI_error_rate_init,
+    typeII_error_rate_diff = typeII_error_rate_fin-typeII_error_rate_init,
+    confidence_diff = confidence_fin_rate-confidence_init_rate,
+    influence_diff = revised_per_ai_rate - revised_agst_ai_rate,
+    typeI_II_error_rate_init = typeI_error_rate_init + typeII_error_rate_init,
+    ai_typeI_II_error_rate = ai_typeI_error_rate + ai_typeII_error_rate
+    )
+
+# Compute grouped summary table per loan officer
+df_grouped <- df %>%
+  group_by(loanofficer_id, Variant) %>%
+  summarise( avg_typeI_error_rate_diff = mean(typeI_error_rate_diff, na.rm = TRUE),
+             avg_typeII_error_rate_diff = mean(typeII_error_rate_diff, na.rm = TRUE),
+             sum_goodloans = sum(goodloans_num, na.rm=TRUE),
+             sum_badloans = sum(badloans_num, na.rm=TRUE),
+             sum_days = n_distinct(day),
+             avg_profit_per_officer_per_loan = mean(profit_per_good_loan, na.rm = TRUE),
+             avg_loss_per_officer_per_loan = mean(loss_per_bad_loan, na.rm = TRUE),
+             avg_confidence_diff = mean(confidence_diff, na.rm = TRUE),
+             avg_influence_diff = revised_per_ai_rate - revised_agst_ai_rate,
+             avg_typeII_error_rate_init = mean(typeII_error_rate_init, na.rm = TRUE),
+             avg_typeI_error_rate_init = mean(typeI_error_rate_init, na.rm = TRUE),
+             avg_typeI_II_error_rate_init = mean(typeI_II_error_rate_init, na.rm = TRUE),
+             avg_ai_typeI_error_rate = mean(ai_typeI_error_rate, na.rm = TRUE),
+             avg_ai_typeII_error_rate = mean(ai_typeII_error_rate, na.rm = TRUE),
+             avg_ai_typeI_II_error_rate = mean(ai_typeI_II_error_rate, na.rm = TRUE)
+             )
+
+#Calculating the weights for loss and profits 
+df_grouped <- df_grouped %>%
+  mutate(
+    loss_weight = avg_loss_per_officer_per_loan/(avg_profit_per_officer_per_loan+avg_loss_per_officer_per_loan),
+    profit_weight = avg_profit_per_officer_per_loan/(avg_profit_per_officer_per_loan+avg_loss_per_officer_per_loan)
+    )
+
+#Calculating EOC_weighted 
+df_grouped_PIEI <- df_grouped %>%
+  mutate(
+    EOC_weighted = loss_weight*avg_typeII_error_rate_diff + profit_weight*avg_typeI_error_rate_diff
+    )
+
+#Calculating AII 
+df_grouped_AII <- df_grouped %>%
+  filter(!is.na(avg_confidence_diff))
+```
+
+
+# T-Test weighted EOC overall performance
+```{r}
+# Perform Welch's t-test to compare Control vs. Treatment for EOC_weighted
+t_test_result <- t.test(EOC_weighted ~ Variant, data = df_grouped_PIEI, var.equal = FALSE)  # Welch's t-test
+
+# Print the t-test results
+print(t_test_result)
+```
+
+# Cohen's weighted EOC overall performance
+```{r}
+# Compute Cohen’s d for EOC_weighted
+cohen_d_result_PIEI <- cohen.d(df_grouped_PIEI$EOC_weighted[df_grouped_PIEI$Variant == "Control"], 
+                          df_grouped_PIEI$EOC_weighted[df_grouped_PIEI$Variant == "Treatment"], 
+                          pooled = TRUE)  # Pooled standard deviation
+
+# Print Cohen’s d result
+print(cohen_d_result_PIEI)
+```
+# T-Test AI Influence Score
+```{r}
+# # Perform Welch's t-test to compare Control vs. Treatment for AII
+t_test_influence <- t.test(avg_influence_diff ~ Variant, data = df_grouped_AII, var.equal = FALSE)
+
+
+# Print t-test results
+print("T-test for AI Influence")
+print(t_test_influence)
+```
+# Cohen's d for AII 
+```{r}
+# Compute Cohen’s d for AII 
+cohen_d_result_AII <- cohen.d(df_grouped_AII$avg_influence_diff[df_grouped_AII$Variant == "Control"], 
+                          df_grouped_AII$avg_influence_diff[df_grouped_AII$Variant == "Treatment"], 
+                          pooled = TRUE)  # Pooled standard deviation
+
+# Print Cohen’s d result
+print(cohen_d_result_AII)
+```
+# Computing Required Sample Size for Desired *Power* Level & Effect Size
+```{r}
+pwr.t.test(power = .8, # 80% power
+           d = .7, # Cohen's d 
+           sig.level = 0.01, # threshold for p-val
+           type = "two.sample")
+
+#power = .8, means we accept 20% chance of incorrectly failing to reject null hypothesis
+#d = .7, bigger the Cohen's d value, smaller the effect size 
+#sig.level = 0.01, significance level threshold for p-val, sample size requirement will increase
+#type = two.sample, for Control and Treatment. 
+```
+
+# T-Test Human decision before AI comparision
+```{r}
+# Perform t-test for Type I error rate before AI (Control vs. Treatment)
+t_test_typeI_II_rate <- t.test(avg_typeI_II_error_rate_init ~ Variant, data = df_grouped, var.equal = FALSE)
+
+print("T-test for Initial Type I & II Error Rate (Before AI)")
+print(t_test_typeI_II_rate)
+```
+
+# T-Test AI performance alone (not possible because the averages are constant)
+```{r}
+# Perform t-tests for AI's Type I and Type II error rates
+# t_test_ai_typeI <- t.test(avg_ai_typeI_error_rate ~ Variant, data = df_grouped, var.equal = FALSE)
+# t_test_ai_typeII <- t.test(avg_ai_typeII_error_rate ~ Variant, data = df_grouped, var.equal = FALSE)
+# t_test_ai_typeI_II <- t.test(avg_ai_typeI_II_error_rate ~ Variant, data = df_grouped, var.equal = FALSE)
+
+
+# Print t-test results
+# print("T-test for AI Type I Error Rate")
+# print(t_test_ai_typeI)
+
+# print("T-test for AI Type II Error Rate")
+# print(t_test_ai_typeII)
+
+# Print t-test results
+# print("T-test for AI Type I & II Error Rate")
+# print(t_test_ai_typeI_II)
+```
+
+
+# T-Test Confidence Score
+```{r}
+# Perform t-tests for Confidence Score Difference
+t_test_confidence <- t.test(avg_confidence_diff ~ Variant, data = df_grouped_3, var.equal = FALSE)
+
+
+# Print t-test results
+print("T-test for Confidence Score")
+print(t_test_confidence)
+```
+```
+
